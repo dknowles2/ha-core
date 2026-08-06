@@ -1,6 +1,5 @@
 """DataUpdateCoordinator for the Schlage integration."""
 
-import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import override
@@ -57,21 +56,19 @@ class SchlageDataUpdateCoordinator(DataUpdateCoordinator[dict[str, LockData]]):
     @override
     async def _async_update_data(self) -> dict[str, LockData]:
         """Fetch the latest data from the Schlage API."""
+        return await self.hass.async_add_executor_job(self._update_data)
+
+    def _update_data(self) -> dict[str, LockData]:
+        """Fetch the latest data from the Schlage API in a single thread."""
         try:
-            locks = await self.hass.async_add_executor_job(self.api.locks)
+            locks = self.api.locks()
         except NotAuthorizedError as ex:
             raise ConfigEntryAuthFailed from ex
         except SchlageError as ex:
             raise UpdateFailed(
                 translation_domain=DOMAIN, translation_key="schlage_refresh_failed"
             ) from ex
-        lock_data = await asyncio.gather(
-            *(
-                self.hass.async_add_executor_job(self._get_lock_data, lock)
-                for lock in locks
-            )
-        )
-        return {ld.lock.device_id: ld for ld in lock_data}
+        return {lock.device_id: self._get_lock_data(lock) for lock in locks}
 
     def _get_lock_data(self, lock: Lock) -> LockData:
         logs: list[LockLog] = []
