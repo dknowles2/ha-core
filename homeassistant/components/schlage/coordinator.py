@@ -1,6 +1,5 @@
 """DataUpdateCoordinator for the Schlage integration."""
 
-import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import override
@@ -26,17 +25,10 @@ class LockData:
     logs: list[LockLog]
 
 
-@dataclass
-class SchlageData:
-    """Container for cached data from the Schlage API."""
-
-    locks: dict[str, LockData]
-
-
 type SchlageConfigEntry = ConfigEntry[SchlageDataUpdateCoordinator]
 
 
-class SchlageDataUpdateCoordinator(DataUpdateCoordinator[SchlageData]):
+class SchlageDataUpdateCoordinator(DataUpdateCoordinator[dict[str, LockData]]):
     """The Schlage data update coordinator."""
 
     config_entry: SchlageConfigEntry
@@ -56,34 +48,32 @@ class SchlageDataUpdateCoordinator(DataUpdateCoordinator[SchlageData]):
             name=f"{DOMAIN} ({username})",
             update_interval=UPDATE_INTERVAL,
         )
-        self.data = SchlageData(locks={})
+        self.data = {}
         self.api = api
         self.new_locks_callbacks: list[Callable[[dict[str, LockData]], None]] = []
         self.async_add_listener(self._add_remove_locks)
 
     @override
-    async def _async_update_data(self) -> SchlageData:
+    async def _async_update_data(self) -> dict[str, LockData]:
         """Fetch the latest data from the Schlage API."""
+        return await self.hass.async_add_executor_job(self._update_data)
+
+    def _update_data(self) -> dict[str, LockData]:
+        """Fetch the latest data from the Schlage API in a single thread."""
         try:
-            locks = await self.hass.async_add_executor_job(self.api.locks)
+            locks = self.api.locks()
         except NotAuthorizedError as ex:
             raise ConfigEntryAuthFailed from ex
         except SchlageError as ex:
             raise UpdateFailed(
                 translation_domain=DOMAIN, translation_key="schlage_refresh_failed"
             ) from ex
-        lock_data = await asyncio.gather(
-            *(
-                self.hass.async_add_executor_job(self._get_lock_data, lock)
-                for lock in locks
-            )
-        )
-        return SchlageData(locks={ld.lock.device_id: ld for ld in lock_data})
+        return {lock.device_id: self._get_lock_data(lock) for lock in locks}
 
     def _get_lock_data(self, lock: Lock) -> LockData:
         logs: list[LockLog] = []
         previous_lock_data = None
-        if self.data and (previous_lock_data := self.data.locks.get(lock.device_id)):
+        if self.data and (previous_lock_data := self.data.get(lock.device_id)):
             # Default to the previous data, in case a refresh fails.
             # It's not critical if we don't have the freshest data.
             logs = previous_lock_data.logs
@@ -111,7 +101,7 @@ class SchlageDataUpdateCoordinator(DataUpdateCoordinator[SchlageData]):
                     previous_locks.add(identifier)
                     previous_locks_by_lock_id[identifier] = device
                     continue
-        current_locks = set(self.data.locks.keys())
+        current_locks = set(self.data.keys())
 
         if removed_locks := previous_locks - current_locks:
             LOGGER.debug("Removed locks: %s", ", ".join(removed_locks))
@@ -122,6 +112,6 @@ class SchlageDataUpdateCoordinator(DataUpdateCoordinator[SchlageData]):
 
         if new_lock_ids := current_locks - previous_locks:
             LOGGER.debug("New locks found: %s", ", ".join(new_lock_ids))
-            new_locks = {lock_id: self.data.locks[lock_id] for lock_id in new_lock_ids}
+            new_locks = {lock_id: self.data[lock_id] for lock_id in new_lock_ids}
             for new_lock_callback in self.new_locks_callbacks:
                 new_lock_callback(new_locks)
