@@ -16,15 +16,23 @@ from pyschlage.code import (
 )
 from pyschlage.exceptions import Error as SchlageError
 import pytest
-from pytest_homeassistant.common import async_fire_time_changed, snapshot_platform
+from pytest_homeassistant.common import (
+    MockUser,
+    async_fire_time_changed,
+    snapshot_platform,
+)
 from syrupy.assertion import SnapshotAssertion
 
 from homeassistant.components.lock import DOMAIN as LOCK_DOMAIN, LockService, LockState
 from homeassistant.components.schlage.const import DOMAIN, UPDATE_INTERVAL
 from homeassistant.components.schlage.services import SchlageService
 from homeassistant.const import STATE_UNAVAILABLE, Platform, TargetKey
-from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.core import Context, HomeAssistant
+from homeassistant.exceptions import (
+    HomeAssistantError,
+    ServiceValidationError,
+    Unauthorized,
+)
 from homeassistant.helpers import entity_registry as er
 
 from . import MockSchlageConfigEntry
@@ -994,3 +1002,69 @@ async def test_add_code_service_temporary_pin_ambiguous_dst(
         )
     assert exc_info.value.translation_key == "schlage_invalid_schedule_timezone"
     mock_lock.refresh_access_codes.assert_not_called()
+
+
+_CODE_SERVICES = pytest.mark.parametrize(
+    ("service", "service_data", "returns_response"),
+    [
+        pytest.param(
+            SchlageService.ADD_CODE,
+            {"name": "test_user", "code": "1234"},
+            False,
+            id="add_code",
+        ),
+        pytest.param(
+            SchlageService.DELETE_CODE, {"name": "test_user"}, False, id="delete_code"
+        ),
+        pytest.param(SchlageService.GET_CODES, {}, True, id="get_codes"),
+    ],
+)
+
+
+@_CODE_SERVICES
+@pytest.mark.usefixtures("mock_added_config_entry")
+async def test_code_services_require_admin(
+    hass: HomeAssistant,
+    mock_lock: Mock,
+    hass_read_only_user: MockUser,
+    service: SchlageService,
+    service_data: dict[str, str],
+    returns_response: bool,
+) -> None:
+    """Test PIN code services reject a non-admin user who can control the lock."""
+    hass_read_only_user.mock_policy({"entities": {"all": {"control": True}}})
+
+    with pytest.raises(Unauthorized):
+        await hass.services.async_call(
+            DOMAIN,
+            service,
+            {"entity_id": "lock.vault_door", **service_data},
+            blocking=True,
+            return_response=returns_response,
+            context=Context(user_id=hass_read_only_user.id),
+        )
+    mock_lock.refresh_access_codes.assert_not_called()
+
+
+@_CODE_SERVICES
+@pytest.mark.usefixtures("mock_added_config_entry")
+async def test_code_services_allow_admin(
+    hass: HomeAssistant,
+    mock_lock: Mock,
+    hass_admin_user: MockUser,
+    service: SchlageService,
+    service_data: dict[str, str],
+    returns_response: bool,
+) -> None:
+    """Test PIN code services accept an admin user."""
+    mock_lock.access_codes = {}
+
+    await hass.services.async_call(
+        DOMAIN,
+        service,
+        {"entity_id": "lock.vault_door", **service_data},
+        blocking=True,
+        return_response=returns_response,
+        context=Context(user_id=hass_admin_user.id),
+    )
+    mock_lock.refresh_access_codes.assert_called_once()

@@ -36,6 +36,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
         hass,
         DOMAIN,
         SchlageService.ADD_CODE,
+        admin_only=True,
         entity_domain=LOCK_DOMAIN,
         schema={
             probatio.Required(SchlageServiceArgument.NAME): cv.string,
@@ -55,6 +56,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
         hass,
         DOMAIN,
         SchlageService.DELETE_CODE,
+        admin_only=True,
         entity_domain=LOCK_DOMAIN,
         schema={
             probatio.Required(SchlageServiceArgument.NAME): cv.string,
@@ -66,6 +68,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
         hass,
         DOMAIN,
         SchlageService.GET_CODES,
+        admin_only=True,
         entity_domain=LOCK_DOMAIN,
         schema=None,
         func="get_codes",
